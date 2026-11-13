@@ -1,0 +1,13 @@
+
+test_empty_case_rejected (test_wrapper.Validation.test_empty_case_rejected) ... ok
+test_existing_case (test_wrapper.Validation.test_existing_case) ... ok
+test_missing_tool_rejected (test_wrapper.Validation.test_missing_tool_rejected) ... ok
+test_new_path_allowed (test_wrapper.Validation.test_new_path_allowed) ... ok
+test_uninitialized_case_rejected (test_wrapper.Validation.test_uninitialized_case_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.002s
+
+OK
+
+Source compiles. Five validation-method tests executed through AST extraction. Tk is absent in this build environment; full GUI import/render and integration tests were not performed.
