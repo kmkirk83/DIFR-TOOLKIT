@@ -1,0 +1,32 @@
+{
+  "files": [
+    {
+      "path": "a",
+      "ok": true
+    }
+  ],
+  "unlisted": []
+}
+{
+  "files": [
+    {
+      "path": "a",
+      "ok": false
+    }
+  ],
+  "unlisted": []
+}
+
+test_bad_time (test_core.Core.test_bad_time) ... ok
+test_import (test_core.Core.test_import) ... ok
+test_naive (test_core.Core.test_naive) ... ok
+test_rules (test_core.Core.test_rules) ... ok
+test_tamper (test_core.Core.test_tamper) ... ok
+test_time (test_core.Core.test_time) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.005s
+
+OK
+
+Scope: synthetic core tests on this execution host only. No Windows, Android, API, encryption, signing, physical acquisition, or audio validation.

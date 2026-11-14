@@ -1,0 +1,15 @@
+# Gradle / Android build output. Do not commit local SDK paths or signing keys.
+.gradle/
+**/build/
+local.properties
+.idea/
+*.iml
+.cxx/
+captures/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+__pycache__/
+*.pyc
