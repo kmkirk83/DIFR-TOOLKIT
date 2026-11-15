@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -176,7 +177,11 @@ fun WorkbenchApp(context: Context) {
                 StatusRail(
                     modifier = Modifier.statusBarsPadding(),
                     left = if (passed) "CASE" else "KIT",
-                    center = if (passed) "IDLE" else if (check == null) "IDLE" else "UNAVAILABLE",
+                    center = when {
+                        check == null -> "RUNNING"
+                        passed -> "IDLE"
+                        else -> "UNAVAILABLE"
+                    },
                     utc = utc,
                     line = line,
                 )
@@ -328,7 +333,7 @@ private fun CaseTab(onBlocked: (Blocked) -> Unit) {
             }
         }
     }
-    Text("Shell 0.1.1 · Kit 0.2 · self-check passed", color = Faint, fontFamily = Mono, fontSize = 13.sp)
+    Text("Shell 0.1.2 · Kit 0.2 · self-check passed", color = Faint, fontFamily = Mono, fontSize = 13.sp)
     BlockedGroup(caseBlocked, onBlocked)
 }
 
@@ -454,7 +459,11 @@ private fun BlockedGroup(items: List<Blocked>, onBlocked: (Blocked) -> Unit) {
 
 @Composable
 private fun WorkbenchNav(selected: Tab, onSelect: (Tab) -> Unit) {
-    NavigationBar(containerColor = Nav, contentColor = Faint) {
+    NavigationBar(
+        modifier = Modifier.navigationBarsPadding(),
+        containerColor = Nav,
+        contentColor = Faint,
+    ) {
         Tab.entries.forEach { tab ->
             val isSelected = tab == selected
             NavigationBarItem(
@@ -583,7 +592,6 @@ private val logIcon = lineIcon("log") {
     lineTo(13f, 18f)
 }
 
-@Composable
 private fun systemReduceMotion(context: Context): Boolean {
     val scale = Settings.Global.getFloat(
         context.contentResolver,
