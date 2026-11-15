@@ -2,7 +2,10 @@ package com.kmkirk83.difrtoolkit
 
 import android.content.Context
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -14,26 +17,34 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -45,6 +56,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -64,12 +76,14 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.animation.core.animateFloatAsState
+import com.chaquo.python.PyException
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -161,6 +175,64 @@ fun WorkbenchApp(context: Context) {
         animationSpec = tween(durationMillis = if (reduce) 0 else 240),
         label = "railLine",
     )
+    val scope = rememberCoroutineScope()
+    var cases by remember { mutableStateOf<List<CaseSummary>>(emptyList()) }
+    var openCase by remember { mutableStateOf<CaseSnapshot?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var operation by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var createOpen by remember { mutableStateOf(false) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        val casePath = openCase?.path ?: return@rememberLauncherForActivityResult
+        if (uris.isEmpty() || busy) return@rememberLauncherForActivityResult
+        scope.launch {
+            busy = true
+            error = null
+            try {
+                importStaged(context, File(casePath), uris) { status ->
+                    operation = status
+                }
+                openCase = loadSnapshot(context, File(casePath))
+                cases = listCases(context)
+            } catch (failure: Exception) {
+                error = failure.userMessage()
+                openCase = try {
+                    loadSnapshot(context, File(casePath))
+                } catch (_: Exception) {
+                    openCase
+                }
+            } finally {
+                busy = false
+                operation = ""
+            }
+        }
+    }
+    LaunchedEffect(passed) {
+        if (!passed) return@LaunchedEffect
+        cases = listCases(context)
+        val saved = savedOpenCase(context)
+        val chosen = cases.firstOrNull { it.path == saved }?.path ?: cases.firstOrNull()?.path
+        if (chosen != null) {
+            try {
+                openCase = loadSnapshot(context, File(chosen))
+                rememberOpenCase(context, chosen)
+            } catch (failure: Exception) {
+                error = failure.userMessage()
+            }
+        }
+    }
+    val railLeft = when {
+        !passed -> "KIT"
+        openCase != null -> openCase!!.folder
+        else -> "CASE"
+    }
+    val railCenter = when {
+        check == null || busy -> "RUNNING"
+        !passed -> "UNAVAILABLE"
+        openCase?.mismatch == true -> "MISMATCH"
+        openCase != null -> "READY"
+        else -> "IDLE"
+    }
 
     MaterialTheme(
         colorScheme = darkColorScheme(
@@ -176,15 +248,31 @@ fun WorkbenchApp(context: Context) {
             Column(Modifier.fillMaxSize()) {
                 StatusRail(
                     modifier = Modifier.statusBarsPadding(),
-                    left = if (passed) "CASE" else "KIT",
-                    center = when {
-                        check == null -> "RUNNING"
-                        passed -> "IDLE"
-                        else -> "UNAVAILABLE"
-                    },
+                    left = railLeft,
+                    center = railCenter,
                     utc = utc,
                     line = line,
                 )
+                if (busy) {
+                    if (reduce) {
+                        Box(Modifier.fillMaxWidth().height(2.dp).background(Accent))
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Kit operation running" },
+                            color = Accent,
+                            trackColor = Rail,
+                        )
+                    }
+                    if (operation.isNotBlank()) {
+                        Text(
+                            operation,
+                            color = Secondary,
+                            fontFamily = Mono,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                        )
+                    }
+                }
                 if (!passed) {
                     StopOrLoading(check, Modifier.weight(1f))
                 } else {
@@ -210,10 +298,45 @@ fun WorkbenchApp(context: Context) {
                             verticalArrangement = Arrangement.spacedBy(16.dp),
                         ) {
                             when (current) {
-                                Tab.Case -> CaseTab(onBlocked = { sheet = it })
-                                Tab.Collect -> CollectTab(onBlocked = { sheet = it })
+                                Tab.Case -> CaseTab(
+                                    cases = cases,
+                                    open = openCase,
+                                    busy = busy,
+                                    error = error,
+                                    onCreate = { if (!busy) createOpen = true },
+                                    onOpen = { path ->
+                                        if (busy) return@CaseTab
+                                        scope.launch {
+                                            busy = true
+                                            error = null
+                                            operation = "Checking case manifest."
+                                            try {
+                                                openCase = loadSnapshot(context, File(path))
+                                                rememberOpenCase(context, path)
+                                            } catch (failure: Exception) {
+                                                error = failure.userMessage()
+                                            } finally {
+                                                busy = false
+                                                operation = ""
+                                            }
+                                        }
+                                    },
+                                    onBlocked = { sheet = it },
+                                )
+                                Tab.Collect -> CollectTab(
+                                    open = openCase,
+                                    busy = busy,
+                                    error = error,
+                                    onImport = {
+                                        if (!busy && openCase != null && openCase?.mismatch != true) {
+                                            picker.launch(arrayOf("*/*"))
+                                        }
+                                    },
+                                    onBlocked = { sheet = it },
+                                )
                                 Tab.Timeline -> TimelineTab()
                                 Tab.Log -> LogTab(
+                                    open = openCase,
                                     reducePref = reducePref,
                                     systemReduce = systemReduce,
                                     onReducePref = { reducePref = it },
@@ -241,6 +364,32 @@ fun WorkbenchApp(context: Context) {
                     Text("Nothing is started from this sheet.", color = Ink, fontFamily = Sans, fontSize = 15.sp)
                 }
             }
+        }
+        if (createOpen) {
+            CreateCaseSheet(
+                context = context,
+                busy = busy,
+                onDismiss = { if (!busy) createOpen = false },
+                onCreate = { directory, collector ->
+                    scope.launch {
+                        busy = true
+                        error = null
+                        operation = "Creating case."
+                        try {
+                            createCase(context, directory, collector)
+                            openCase = loadSnapshot(context, directory)
+                            rememberOpenCase(context, directory.absolutePath)
+                            cases = listCases(context)
+                            createOpen = false
+                        } catch (failure: Exception) {
+                            error = failure.userMessage()
+                        } finally {
+                            busy = false
+                            operation = ""
+                        }
+                    }
+                },
+            )
         }
     }
 }
@@ -316,42 +465,141 @@ private fun StopOrLoading(check: Result<SelfCheck>?, modifier: Modifier) {
 }
 
 @Composable
-private fun CaseTab(onBlocked: (Blocked) -> Unit) {
+private fun CaseTab(
+    cases: List<CaseSummary>,
+    open: CaseSnapshot?,
+    busy: Boolean,
+    error: String?,
+    onCreate: () -> Unit,
+    onOpen: (String) -> Unit,
+    onBlocked: (Blocked) -> Unit,
+) {
     Text("Cases", color = Ink, fontFamily = Sans, fontWeight = FontWeight.Medium, fontSize = 22.sp)
     Text("On this phone. Nothing is uploaded.", color = Secondary, fontFamily = Sans, fontSize = 15.sp)
-    Surface(color = Card, modifier = Modifier.fillMaxWidth()) {
-        Row(Modifier.height(androidx.compose.foundation.layout.IntrinsicSize.Min)) {
-            Box(Modifier.width(3.dp).fillMaxHeight().background(Accent))
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("No case yet", color = Ink, fontFamily = Sans, fontWeight = FontWeight.Medium, fontSize = 18.sp)
-                Text(
-                    "Creating a case is not in this build. No folder is created and no file is copied.",
-                    color = Secondary,
-                    fontFamily = Sans,
-                    fontSize = 15.sp,
-                )
+    if (open == null) {
+        Surface(color = Card, modifier = Modifier.fillMaxWidth()) {
+            Row(Modifier.height(IntrinsicSize.Min)) {
+                Box(Modifier.width(3.dp).fillMaxHeight().background(Accent))
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("No case yet", color = Ink, fontFamily = Sans, fontWeight = FontWeight.Medium, fontSize = 18.sp)
+                    Text(
+                        "Create a case before any file is copied.",
+                        color = Secondary,
+                        fontFamily = Sans,
+                        fontSize = 15.sp,
+                    )
+                }
+            }
+        }
+    } else {
+        Surface(color = Card, modifier = Modifier.fillMaxWidth()) {
+            Row(Modifier.height(IntrinsicSize.Min)) {
+                Box(Modifier.width(3.dp).fillMaxHeight().background(if (open.mismatch) Break else Accent))
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(open.folder, color = Ink, fontFamily = Mono, fontSize = 16.sp)
+                    Text("Collector ${open.collector}", color = Secondary, fontFamily = Sans, fontSize = 15.sp)
+                    Text(open.created, color = Faint, fontFamily = Mono, fontSize = 13.sp)
+                    Text(open.version, color = Faint, fontFamily = Mono, fontSize = 13.sp)
+                    if (open.mismatch) {
+                        Text(
+                            "Integrity mismatch. Further writes stay off. Seal is not offered.",
+                            color = Break,
+                            fontFamily = Sans,
+                            fontSize = 15.sp,
+                        )
+                    }
+                }
             }
         }
     }
-    Text("Shell 0.1.2 · Kit 0.2 · self-check passed", color = Faint, fontFamily = Mono, fontSize = 13.sp)
+    if (cases.size > 1 || (cases.isNotEmpty() && open == null)) {
+        Surface(color = Card, modifier = Modifier.fillMaxWidth()) {
+            Column {
+                cases.forEachIndexed { index, item ->
+                    if (index > 0) HorizontalDivider(color = Hairline)
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !busy, onClickLabel = "Open case") { onOpen(item.path) }
+                            .padding(16.dp),
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(item.folder, color = if (item.path == open?.path) Accent else Ink, fontFamily = Mono, fontSize = 14.sp)
+                            Text(item.collector.ifBlank { "No collector name" }, color = Secondary, fontFamily = Sans, fontSize = 15.sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    ErrorLine(error)
+    Button(
+        onClick = onCreate,
+        enabled = !busy,
+        modifier = Modifier.fillMaxWidth().height(48.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF227B75), contentColor = Ink),
+    ) {
+        Text("Create case", fontFamily = Sans, fontSize = 16.sp)
+    }
+    Text("Shell 0.1.3 · Kit 0.2", color = Faint, fontFamily = Mono, fontSize = 13.sp)
     BlockedGroup(caseBlocked, onBlocked)
 }
 
 @Composable
-private fun CollectTab(onBlocked: (Blocked) -> Unit) {
+private fun CollectTab(
+    open: CaseSnapshot?,
+    busy: Boolean,
+    error: String?,
+    onImport: () -> Unit,
+    onBlocked: (Blocked) -> Unit,
+) {
     Text("Collect", color = Ink, fontFamily = Sans, fontWeight = FontWeight.Medium, fontSize = 22.sp)
     Text("Copy only files you choose. Originals are not modified.", color = Secondary, fontFamily = Sans, fontSize = 15.sp)
     Surface(color = Card, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Import files", color = Ink, fontFamily = Sans, fontWeight = FontWeight.Medium, fontSize = 18.sp)
             Text(
-                "Not in this build. When it is, SHA-256 is recorded before and after a copy you choose.",
+                "The kit hashes a private staging copy, then stores that copy in the case. The file you picked is not written.",
                 color = Secondary,
                 fontFamily = Sans,
                 fontSize = 15.sp,
             )
+            if (open == null) {
+                Text("Create a case first.", color = Faint, fontFamily = Sans, fontSize = 15.sp)
+            }
+            if (open?.mismatch == true) {
+                Text("Import is off because the case manifest does not match.", color = Break, fontFamily = Sans, fontSize = 15.sp)
+            }
+            Button(
+                onClick = onImport,
+                enabled = !busy && open != null && open.mismatch.not(),
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF227B75), contentColor = Ink),
+            ) {
+                Text("Add evidence files", fontFamily = Sans, fontSize = 16.sp)
+            }
         }
     }
+    if (open != null && open.imports.isEmpty()) {
+        Text("No imports in this case.", color = Secondary, fontFamily = Sans, fontSize = 15.sp)
+    }
+    open?.imports?.forEach { item ->
+        Surface(color = Card, modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(item.destination, color = Ink, fontFamily = Mono, fontSize = 13.sp)
+                Text(item.copyHash, color = Faint, fontFamily = Mono, fontSize = 12.sp)
+                if (item.sourceChanged) {
+                    Text(
+                        "Source size or time changed during the kit copy.",
+                        color = Color(0xFFE6B35A),
+                        fontFamily = Sans,
+                        fontSize = 15.sp,
+                    )
+                }
+            }
+        }
+    }
+    ErrorLine(error)
     BlockedGroup(collectBlocked, onBlocked)
 }
 
@@ -379,21 +627,35 @@ private fun TimelineTab() {
 }
 
 @Composable
-private fun LogTab(reducePref: Boolean, systemReduce: Boolean, onReducePref: (Boolean) -> Unit) {
+private fun LogTab(
+    open: CaseSnapshot?,
+    reducePref: Boolean,
+    systemReduce: Boolean,
+    onReducePref: (Boolean) -> Unit,
+) {
     Text("Log", color = Ink, fontFamily = Sans, fontWeight = FontWeight.Medium, fontSize = 22.sp)
-    Text("No case operations yet.", color = Secondary, fontFamily = Sans, fontSize = 15.sp)
     Text(
         "self-check time_utc $EXPECTED_UTC",
         color = Ink,
         fontFamily = Mono,
         fontSize = 13.sp,
     )
-    Text(
-        "The case journal is the record once a case exists. This screen does not show one.",
-        color = Secondary,
-        fontFamily = Sans,
-        fontSize = 15.sp,
-    )
+    if (open == null || open.journalTail.isEmpty()) {
+        Text("No case operations yet.", color = Secondary, fontFamily = Sans, fontSize = 15.sp)
+    } else {
+        Text(
+            "Last ${open.journalTail.size} journal lines. The case file is the record.",
+            color = Secondary,
+            fontFamily = Sans,
+            fontSize = 15.sp,
+        )
+        Text(
+            open.journalTail.joinToString("\n"),
+            color = Faint,
+            fontFamily = Mono,
+            fontSize = 12.sp,
+        )
+    }
     Surface(color = Card, modifier = Modifier.fillMaxWidth()) {
         Row(
             Modifier.padding(16.dp),
@@ -590,6 +852,83 @@ private val logIcon = lineIcon("log") {
     lineTo(19f, 12f)
     moveTo(5f, 18f)
     lineTo(13f, 18f)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CreateCaseSheet(
+    context: Context,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onCreate: (File, String) -> Unit,
+) {
+    val directory = remember { planCaseDirectory(context) }
+    var collector by remember { mutableStateOf("") }
+    var consent by remember { mutableStateOf(false) }
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Card) {
+        Column(
+            Modifier
+                .imePadding()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 20.dp, end = 20.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Create case", color = Ink, fontFamily = Sans, fontWeight = FontWeight.Medium, fontSize = 22.sp)
+            Text(
+                "The kit will create this private folder. Dismissing the sheet does nothing.",
+                color = Secondary,
+                fontFamily = Sans,
+                fontSize = 15.sp,
+            )
+            Text(directory.name, color = Ink, fontFamily = Mono, fontSize = 13.sp)
+            OutlinedTextField(
+                value = collector,
+                onValueChange = { collector = it },
+                label = { Text("Collector") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Ink,
+                    unfocusedTextColor = Ink,
+                    focusedBorderColor = Accent,
+                    unfocusedBorderColor = Hairline,
+                    focusedLabelColor = Secondary,
+                    unfocusedLabelColor = Secondary,
+                    cursorColor = Accent,
+                ),
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = consent, onCheckedChange = { consent = it })
+                Text(
+                    "I own these devices or accounts, or I have explicit permission to examine them.",
+                    color = Ink,
+                    fontFamily = Sans,
+                    fontSize = 15.sp,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Button(
+                onClick = { onCreate(directory, collector.trim()) },
+                enabled = !busy && collector.trim().isNotEmpty() && consent,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF227B75), contentColor = Ink),
+            ) {
+                Text(if (busy) "Creating case" else "Create case", fontFamily = Sans, fontSize = 16.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ErrorLine(error: String?) {
+    if (!error.isNullOrBlank()) {
+        Text(error, color = Break, fontFamily = Mono, fontSize = 13.sp)
+    }
+}
+
+private fun Exception.userMessage(): String {
+    val raw = message?.trim().orEmpty().ifBlank { javaClass.simpleName }
+    return if (raw.length > 500) raw.take(500) else raw
 }
 
 private fun systemReduceMotion(context: Context): Boolean {
