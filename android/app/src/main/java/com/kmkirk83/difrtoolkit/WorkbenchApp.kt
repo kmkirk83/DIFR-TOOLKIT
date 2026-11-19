@@ -182,7 +182,10 @@ fun WorkbenchApp(context: Context) {
     var operation by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var createOpen by remember { mutableStateOf(false) }
+    var plannedCase by remember { mutableStateOf<File?>(null) }
+    var picking by remember { mutableStateOf(false) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        picking = false
         val casePath = openCase?.path ?: return@rememberLauncherForActivityResult
         if (uris.isEmpty() || busy) return@rememberLauncherForActivityResult
         scope.launch {
@@ -302,8 +305,14 @@ fun WorkbenchApp(context: Context) {
                                     cases = cases,
                                     open = openCase,
                                     busy = busy,
+                                    picking = picking,
                                     error = error,
-                                    onCreate = { if (!busy) createOpen = true },
+                                    onCreate = {
+                                        if (!busy && !picking) {
+                                            plannedCase = planCaseDirectory(context)
+                                            createOpen = true
+                                        }
+                                    },
                                     onOpen = { path ->
                                         if (busy) return@CaseTab
                                         scope.launch {
@@ -326,9 +335,11 @@ fun WorkbenchApp(context: Context) {
                                 Tab.Collect -> CollectTab(
                                     open = openCase,
                                     busy = busy,
+                                    picking = picking,
                                     error = error,
                                     onImport = {
-                                        if (!busy && openCase != null && openCase?.mismatch != true) {
+                                        if (!busy && !picking && openCase != null && openCase?.mismatch != true) {
+                                            picking = true
                                             picker.launch(arrayOf("*/*"))
                                         }
                                     },
@@ -365,10 +376,11 @@ fun WorkbenchApp(context: Context) {
                 }
             }
         }
-        if (createOpen) {
+        if (createOpen && plannedCase != null) {
             CreateCaseSheet(
-                context = context,
+                directory = plannedCase!!,
                 busy = busy,
+                error = error,
                 onDismiss = { if (!busy) createOpen = false },
                 onCreate = { directory, collector ->
                     scope.launch {
@@ -383,6 +395,10 @@ fun WorkbenchApp(context: Context) {
                             createOpen = false
                         } catch (failure: Exception) {
                             error = failure.userMessage()
+                            if (!File(directory, "case.json").isFile) {
+                                directory.deleteRecursively()
+                                plannedCase = planCaseDirectory(context)
+                            }
                         } finally {
                             busy = false
                             operation = ""
@@ -469,6 +485,7 @@ private fun CaseTab(
     cases: List<CaseSummary>,
     open: CaseSnapshot?,
     busy: Boolean,
+    picking: Boolean,
     error: String?,
     onCreate: () -> Unit,
     onOpen: (String) -> Unit,
@@ -507,6 +524,9 @@ private fun CaseTab(
                             fontFamily = Sans,
                             fontSize = 15.sp,
                         )
+                        if (!open.verifyDetail.isNullOrBlank()) {
+                            Text(open.verifyDetail, color = Break, fontFamily = Mono, fontSize = 13.sp)
+                        }
                     }
                 }
             }
@@ -535,13 +555,13 @@ private fun CaseTab(
     ErrorLine(error)
     Button(
         onClick = onCreate,
-        enabled = !busy,
+        enabled = !busy && !picking,
         modifier = Modifier.fillMaxWidth().height(48.dp),
         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF227B75), contentColor = Ink),
     ) {
         Text("Create case", fontFamily = Sans, fontSize = 16.sp)
     }
-    Text("Shell 0.1.3 · Kit 0.2", color = Faint, fontFamily = Mono, fontSize = 13.sp)
+    Text("Shell 0.1.4 · Kit 0.2", color = Faint, fontFamily = Mono, fontSize = 13.sp)
     BlockedGroup(caseBlocked, onBlocked)
 }
 
@@ -549,6 +569,7 @@ private fun CaseTab(
 private fun CollectTab(
     open: CaseSnapshot?,
     busy: Boolean,
+    picking: Boolean,
     error: String?,
     onImport: () -> Unit,
     onBlocked: (Blocked) -> Unit,
@@ -559,7 +580,7 @@ private fun CollectTab(
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Import files", color = Ink, fontFamily = Sans, fontWeight = FontWeight.Medium, fontSize = 18.sp)
             Text(
-                "The kit hashes a private staging copy, then stores that copy in the case. The file you picked is not written.",
+                "Bytes are copied into private staging. The kit hashes that copy and stores it in the case. The document you picked is not modified. The journal source path is the staging file, not the original location.",
                 color = Secondary,
                 fontFamily = Sans,
                 fontSize = 15.sp,
@@ -572,7 +593,7 @@ private fun CollectTab(
             }
             Button(
                 onClick = onImport,
-                enabled = !busy && open != null && open.mismatch.not(),
+                enabled = !busy && !picking && open != null && !open.mismatch,
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF227B75), contentColor = Ink),
             ) {
@@ -587,7 +608,7 @@ private fun CollectTab(
         Surface(color = Card, modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(item.destination, color = Ink, fontFamily = Mono, fontSize = 13.sp)
-                Text(item.copyHash, color = Faint, fontFamily = Mono, fontSize = 12.sp)
+                Text("SHA-256 ${item.copyHash}", color = Faint, fontFamily = Mono, fontSize = 12.sp)
                 if (item.sourceChanged) {
                     Text(
                         "Source size or time changed during the kit copy.",
@@ -857,12 +878,12 @@ private val logIcon = lineIcon("log") {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CreateCaseSheet(
-    context: Context,
+    directory: File,
     busy: Boolean,
+    error: String?,
     onDismiss: () -> Unit,
     onCreate: (File, String) -> Unit,
 ) {
-    val directory = remember { planCaseDirectory(context) }
     var collector by remember { mutableStateOf("") }
     var consent by remember { mutableStateOf(false) }
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Card) {
@@ -875,7 +896,7 @@ private fun CreateCaseSheet(
         ) {
             Text("Create case", color = Ink, fontFamily = Sans, fontWeight = FontWeight.Medium, fontSize = 22.sp)
             Text(
-                "The kit will create this private folder. Dismissing the sheet does nothing.",
+                "Confirming creates this private folder. Dismissing the sheet does nothing.",
                 color = Secondary,
                 fontFamily = Sans,
                 fontSize = 15.sp,
@@ -915,6 +936,7 @@ private fun CreateCaseSheet(
             ) {
                 Text(if (busy) "Creating case" else "Create case", fontFamily = Sans, fontSize = 16.sp)
             }
+            ErrorLine(error)
         }
     }
 }

@@ -13,8 +13,8 @@ android {
         applicationId = "com.kmkirk83.difrtoolkit"
         minSdk = 24
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.1.3"
+        versionCode = 5
+        versionName = "0.1.4"
         ndk {
             // Physical phones. x86/x86_64 emulators are not included.
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")

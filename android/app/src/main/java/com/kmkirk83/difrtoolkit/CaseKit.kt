@@ -30,6 +30,7 @@ data class CaseSnapshot(
     val created: String,
     val version: String,
     val mismatch: Boolean,
+    val verifyDetail: String?,
     val imports: List<ImportRecord>,
     val journalTail: List<String>,
 )
@@ -72,21 +73,26 @@ fun planCaseDirectory(context: Context): File {
 
 suspend fun createCase(context: Context, directory: File, collector: String) {
     withContext(Dispatchers.Default) {
+        val root = casesRoot(context).canonicalFile
+        val target = directory.canonicalFile
+        if (target.parentFile?.canonicalFile != root) {
+            error("Case folder must stay in app storage.")
+        }
         startPython(context)
-        runKit(listOf("init", directory.absolutePath, "--collector", collector.trim(), "--consent"))
+        runKit(listOf("init", target.absolutePath, "--collector", collector.trim(), "--consent"))
     }
 }
 
 suspend fun importStaged(context: Context, caseDir: File, uris: List<Uri>, onStatus: (String) -> Unit): Int {
+    val batch = File(File(context.cacheDir, "import-stage"), java.util.UUID.randomUUID().toString())
     val staged = ArrayList<File>(uris.size)
-    val stageRoot = File(context.cacheDir, "import-stage")
     return try {
         withContext(Dispatchers.IO) {
             uris.forEachIndexed { index, uri ->
                 withContext(Dispatchers.Main) {
                     onStatus("Copying ${index + 1} of ${uris.size} into private staging. The original is not written.")
                 }
-                staged += stageCopy(context, uri, stageRoot)
+                staged += stageCopy(context, uri, batch)
             }
             withContext(Dispatchers.Main) { onStatus("Running kit import.") }
             startPython(context)
@@ -94,21 +100,23 @@ suspend fun importStaged(context: Context, caseDir: File, uris: List<Uri>, onSta
         }
         staged.size
     } finally {
-        staged.forEach { it.delete() }
+        batch.deleteRecursively()
     }
 }
 
 suspend fun loadSnapshot(context: Context, directory: File): CaseSnapshot = withContext(Dispatchers.Default) {
     startPython(context)
+    var detail: String? = null
     val mismatch = try {
         !verifyCase(directory)
     } catch (error: PyException) {
-        throw error
+        detail = error.message?.trim()?.take(500)
+        true
     }
-    readSnapshot(directory, mismatch)
+    readSnapshot(directory, mismatch, detail)
 }
 
-private fun readSnapshot(directory: File, mismatch: Boolean): CaseSnapshot {
+private fun readSnapshot(directory: File, mismatch: Boolean, verifyDetail: String?): CaseSnapshot {
     val caseJson = JSONObject(File(directory, "case.json").readText())
     val journalFile = File(directory, "journal.jsonl")
     val lines = if (journalFile.isFile) journalFile.readLines() else emptyList()
@@ -132,6 +140,7 @@ private fun readSnapshot(directory: File, mismatch: Boolean): CaseSnapshot {
         created = caseJson.optString("created"),
         version = caseJson.optString("version"),
         mismatch = mismatch,
+        verifyDetail = verifyDetail,
         imports = imports,
         journalTail = lines.takeLast(40),
     )
@@ -155,7 +164,7 @@ private fun runKit(args: List<String>) {
 private fun verifyCase(directory: File): Boolean {
     val py = Python.getInstance()
     val path = py.getModule("pathlib").callAttr("Path", directory.absolutePath)
-    return py.getModule("dfir_kit").callAttr("verify", path).toString() == "True"
+    return py.getModule("dfir_kit").callAttr("verify", path).toJava(Boolean::class.java) == true
 }
 
 private fun stageCopy(context: Context, uri: Uri, stageRoot: File): File {
